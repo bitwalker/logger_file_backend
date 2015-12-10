@@ -7,5 +7,5 @@ config :logger,
 
 config :logger, :dev_backend,
   level: :error,
-  path: "test/logs/error.log",
+  path: "test/logs/error_$date_$hour.log",
   format: "DEV $message"

@@ -42,7 +42,7 @@ defmodule LoggerFileBackend do
   end
 
   defp log_event(level, msg, ts, md, %{path: path, io_device: nil} = state) when is_binary(path) do
-    case open_log(path) do
+    case open_log(format_path(path, ts)) do
       {:ok, io_device, inode} ->
         log_event(level, msg, ts, md, %{state | io_device: io_device, inode: inode})
       _other ->
@@ -51,7 +51,7 @@ defmodule LoggerFileBackend do
   end
 
   defp log_event(level, msg, ts, md, %{path: path, io_device: io_device, inode: inode} = state) when is_binary(path) do
-    if !is_nil(inode) and inode == inode(path) do
+    if !is_nil(inode) and inode == inode(format_path(path, ts)) do
       IO.write(io_device, format_event(level, msg, ts, md, state))
       {:ok, state}
     else
@@ -77,6 +77,37 @@ defmodule LoggerFileBackend do
   end
 
 
+  defp format_path(path_format, {{year, month, day} = date, {hour, min, sec, _} = time}) do
+    # from https://github.com/SkAZi/logger_file_backend/blob/master/lib/backends/file.ex#L103
+    data = %{
+      date: format_date(date),
+      year: pad2(year),
+      month: pad2(month),
+      day: pad2(day),
+      time: format_time(time),
+      hour: pad2(hour),
+      min: pad2(min),
+      sec: pad2(sec),
+    }
+    Enum.map(path_format |> compile, &output(&1, data))
+  end
+
+  defp format_date({y,m,d}), do: "#{y}#{pad2(m)}#{pad2(d)}"
+  defp format_time({m,h,s,_}), do: "#{pad2(m)}#{pad2(h)}#{pad2(s)}"
+
+  defp pad2(x) when x < 10, do: "0#{x}"
+  defp pad2(x), do: "#{x}"
+
+  defp output(atom, data) when is_atom(atom) do
+    case data[atom] do
+      nil -> ''
+      val when is_binary(val) -> '#{val}'
+      val -> '#{inspect val}'
+    end
+  end
+  defp output(any, _), do: any
+
+
   defp inode(path) do
     case File.stat(path) do
       {:ok, %File.Stat{inode: inode}} -> inode
@@ -84,6 +115,15 @@ defmodule LoggerFileBackend do
     end
   end
 
+
+  def compile(str) do
+    for part <- Regex.split(~r/(?<head>)\$[a-z]+(?<tail>)/, str, on: [:head, :tail], trim: true) do
+      case part do
+        "$" <> code -> String.to_existing_atom(code)
+        _ -> part
+      end
+    end
+  end
 
   defp configure(name, opts) do
     env = Application.get_env(:logger, name, [])
