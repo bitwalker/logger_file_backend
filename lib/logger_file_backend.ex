@@ -169,6 +169,13 @@ defmodule LoggerFileBackend do
     format        = Logger.Formatter.compile(format_opts)
     path          = Keyword.get(opts, :path)
 
+    # Expand {:system, "ENV"}
+    path = case path do
+      {:system, env_var} -> System.get_env(env_var)
+      {:system, env_var, default} -> System.get_env(env_var) || default
+      p -> p
+    end
+
     %{state | name: name, path: path, format: format, level: level, metadata: metadata}
   end
 
