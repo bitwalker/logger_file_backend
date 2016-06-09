@@ -3,8 +3,8 @@ defmodule LoggerFileBackend.Mixfile do
 
   def project do
     [app: :logger_file_backend,
-     version: "0.0.5",
-     elixir: ">= 1.0.0 and <= 1.2.0",
+     version: "0.0.9-dev",
+     elixir: "~> 1.0",
      description: description,
      package: package,
      deps: deps]
@@ -28,6 +28,6 @@ defmodule LoggerFileBackend.Mixfile do
   end
 
   defp deps do
-    []
+    [{:credo, "~> 0.3", only: [:dev, :test]}]
   end
 end

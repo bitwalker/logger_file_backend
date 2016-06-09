@@ -1,4 +1,7 @@
 defmodule LoggerFileBackend do
+  @moduledoc"""
+  """
+
   use GenEvent
 
   @type path      :: String.t
@@ -16,8 +19,8 @@ defmodule LoggerFileBackend do
   end
 
 
-  def handle_call({:configure, opts}, %{name: name}) do
-    {:ok, :ok, configure(name, opts)}
+  def handle_call({:configure, opts}, %{name: name} = state) do
+    {:ok, :ok, configure(name, opts, state)}
   end
 
 
@@ -51,10 +54,23 @@ defmodule LoggerFileBackend do
   end
 
   defp log_event(level, msg, ts, md, %{path: path, io_device: io_device, inode: inode} = state) when is_binary(path) do
-    if !is_nil(inode) and inode == inode(format_path(path, ts)) do
-      IO.write(io_device, format_event(level, msg, ts, md, state))
-      {:ok, state}
+    if !is_nil(inode) and inode == get_inode(format_path(path, ts)) do
+      output = format_event(level, msg, ts, md, state)
+      try do
+        IO.write(io_device, output)
+        {:ok, state}
+      rescue
+        ErlangError ->
+          case open_log(path) do
+            {:ok, io_device, inode} ->
+              IO.write(io_device, prune(output))
+              {:ok, %{state | io_device: io_device, inode: inode}}
+            _other ->
+              {:ok, %{state | io_device: nil, inode: nil}}
+          end
+      end
     else
+      File.close(io_device)
       log_event(level, msg, ts, md, %{state | io_device: nil, inode: nil})
     end
   end
@@ -64,7 +80,7 @@ defmodule LoggerFileBackend do
     case (path |> Path.dirname |> File.mkdir_p) do
       :ok ->
         case File.open(path, [:append, :utf8]) do
-          {:ok, io_device} -> {:ok, io_device, inode(path)}
+          {:ok, io_device} -> {:ok, io_device, get_inode(path)}
           other -> other
         end
       other -> other
@@ -72,8 +88,20 @@ defmodule LoggerFileBackend do
   end
 
 
-  defp format_event(level, msg, ts, md, %{format: format, metadata: metadata}) do
-    Logger.Formatter.format(format, level, msg, ts, Dict.take(md, metadata))
+  defp format_event(level, msg, ts, md, %{format: format, metadata: keys}) do
+    Logger.Formatter.format(format, level, msg, ts, take_metadata(md, keys))
+  end
+
+
+  defp take_metadata(metadata, keys) do
+    metadatas = Enum.reduce(keys, [], fn key, acc ->
+      case Keyword.fetch(metadata, key) do
+        {:ok, val} -> [{key, val} | acc]
+        :error     -> acc
+      end
+    end)
+
+    Enum.reverse(metadatas)
   end
 
 
@@ -108,7 +136,7 @@ defmodule LoggerFileBackend do
   defp output(any, _), do: any
 
 
-  defp inode(path) do
+  defp get_inode(path) do
     case File.stat(path) do
       {:ok, %File.Stat{inode: inode}} -> inode
       {:error, _} -> nil
@@ -126,15 +154,37 @@ defmodule LoggerFileBackend do
   end
 
   defp configure(name, opts) do
+    state = %{name: nil, path: nil, io_device: nil, inode: nil, format: nil, level: nil, metadata: nil}
+    configure(name, opts, state)
+  end
+
+  defp configure(name, opts, state) do
     env = Application.get_env(:logger, name, [])
     opts = Keyword.merge(env, opts)
     Application.put_env(:logger, name, opts)
 
-    level    = Keyword.get(opts, :level)
-    metadata = Keyword.get(opts, :metadata, [])
-    format   = Keyword.get(opts, :format, @default_format) |> Logger.Formatter.compile
-    path     = Keyword.get(opts, :path)
+    level         = Keyword.get(opts, :level)
+    metadata      = Keyword.get(opts, :metadata, [])
+    format_opts   = Keyword.get(opts, :format, @default_format)
+    format        = Logger.Formatter.compile(format_opts)
+    path          = Keyword.get(opts, :path)
 
-    %{name: name, path: path, io_device: nil, inode: nil, format: format, level: level, metadata: metadata}
+    %{state | name: name, path: path, format: format, level: level, metadata: metadata}
   end
+
+  @replacement "�"
+
+  @spec prune(IO.chardata) :: IO.chardata
+  def prune(binary) when is_binary(binary), do: prune_binary(binary, "")
+  def prune([h|t]) when h in 0..1114111, do: [h|prune(t)]
+  def prune([h|t]), do: [prune(h)|prune(t)]
+  def prune([]), do: []
+  def prune(_), do: @replacement
+
+  defp prune_binary(<<h::utf8, t::binary>>, acc),
+    do: prune_binary(t, <<acc::binary, h::utf8>>)
+  defp prune_binary(<<_, t::binary>>, acc),
+    do: prune_binary(t, <<acc::binary, @replacement>>)
+  defp prune_binary(<<>>, acc),
+    do: acc
 end
